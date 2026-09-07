@@ -70,9 +70,13 @@ def import_photos(source_dir, dest_base_dir="~/local/photos"):
                         target_file_path = target_dir / new_name
                         counter += 1
                     
-                    # Move the file
+                    # Move the file natively (much faster than shutil across drives)
                     print(f"Moving {file_path.name} -> {target_dir}")
-                    shutil.move(str(file_path), str(target_file_path))
+                    
+                    # Using native 'mv' via subprocess is significantly faster than shutil.move 
+                    # across different filesystems (like ExFAT to APFS) and handles 
+                    # OS-level buffering/optimizations better.
+                    subprocess.run(["mv", str(file_path), str(target_file_path)], check=True)
                     moved_count += 1
                     
                 except Exception as e:
@@ -82,12 +86,12 @@ def import_photos(source_dir, dest_base_dir="~/local/photos"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Move SD card raw/jpeg/mp4 files to ~/local/photos/[date]")
-    parser.add_argument("source", nargs="?", help="Source directory (e.g., /Volumes/SD_CARD)")
+    parser.add_argument("--src", help="Source directory (e.g., /Volumes/SD_CARD)")
     parser.add_argument("--dest", default="~/local/photos", help="Destination base directory (default: ~/local/photos)")
     
     args = parser.parse_args()
     
-    if not args.source:
+    if not args.src:
         print("Please provide a source directory.")
         print("Available SD cards:")
         volumes_dir = Path("/Volumes")
@@ -102,6 +106,6 @@ if __name__ == "__main__":
         if not found_sd_card:
             print("  (No SD cards found)")
             
-        print("\nUsage example: ./import_photos.py /Volumes/R8_SDCard")
+        print("\nUsage example: ./import_photos.py --src /Volumes/EOS_DIGITAL --dest /Volumes/MacMiniExternal/local/photos")
     else:
-        import_photos(args.source, args.dest)
+        import_photos(args.src, args.dest)
