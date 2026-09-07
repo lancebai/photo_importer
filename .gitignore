@@ -127,3 +127,13 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Photo Importer specific
+*.db
+*.sqlite
+token.json
+client_secret.json
+credentials.json
+.DS_Store
+config.json
+logs/
