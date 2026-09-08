@@ -46,14 +46,14 @@ def cmd_import(args, config: Config, db: Database):
 
     if args.dest:
         vol_cfg.dest_base_dir = args.dest
-    if args.move:
-        vol_cfg.use_move = True
-    if args.copy:
-        vol_cfg.use_move = False
+    if args.delete_source or args.move:
+        vol_cfg.delete_after_import = True
+    if args.keep_source or args.copy:
+        vol_cfg.delete_after_import = False
 
     print(f"Scanning '{src}' (Volume: {v_name})...")
     print(f"Destination base directory: {vol_cfg.dest_base_dir}")
-    print(f"Mode: {'MOVE' if vol_cfg.use_move else 'COPY + SHA256 Verify'}")
+    print(f"Delete After Import: {'Yes (free SD space)' if vol_cfg.delete_after_import else 'No (safe copy)'}")
     print(f"Upload Config: Enabled={vol_cfg.upload.enabled}, Account={vol_cfg.upload.google_account}")
 
     res = import_photos(
@@ -124,9 +124,9 @@ def cmd_config(args, config: Config, db: Database):
         print("⚙️  Photo Importer Matrix Configuration (~/.config/photo_importer/config.json)")
         print("==================================================")
         print("\n[Global Defaults]")
-        print(f"  • Base Directory:   {config.defaults.dest_base_dir}")
-        print(f"  • Folder Structure: {config.defaults.folder_structure}")
-        print(f"  • Use Move:         {config.defaults.use_move}")
+        print(f"  • Base Directory:       {config.defaults.dest_base_dir}")
+        print(f"  • Folder Structure:     {config.defaults.folder_structure}")
+        print(f"  • Delete After Import:  {config.defaults.delete_after_import}")
         
         print("\n[Google Accounts Matrix]")
         for acc_name, acc in config.google_accounts.items():
@@ -141,8 +141,9 @@ def cmd_config(args, config: Config, db: Database):
             status_up = f"Enabled -> Account: '{up.google_account}'" if up.enabled else "Disabled"
             album_str = f" | Album: '{up.album}'" if (up.enabled and up.album) else ""
             dest_str = vol.dest_base_dir or f"(Default: {config.defaults.dest_base_dir})"
+            del_str = f" | Delete: {vol.delete_after_import}" if vol.delete_after_import is not None else ""
             print(f"  • Volume: '{v_name}'")
-            print(f"    - Local Dest: {dest_str}")
+            print(f"    - Local Dest: {dest_str}{del_str}")
             print(f"    - Upload:     {status_up}{album_str}")
         print("==================================================")
 
@@ -156,18 +157,17 @@ def cmd_config(args, config: Config, db: Database):
         elif args.no_upload:
             upload_en = False
 
-        use_mv = None
-        if args.move:
-            use_mv = True
-        elif args.copy:
-            use_mv = False
+        del_after = None
+        if args.delete_source or args.move or args.delete_after_import:
+            del_after = True
+        elif args.keep_source or args.copy:
+            del_after = False
 
         config.set_volume_config(
             volume_name=args.name,
             dest_base_dir=args.dest,
             folder_structure=args.folder_structure,
-            use_move=use_mv,
-            delete_after_import=args.delete_after_import,
+            delete_after_import=del_after,
             upload_enabled=upload_en,
             google_account=args.account,
             album=args.album
@@ -241,8 +241,8 @@ def build_parser() -> argparse.ArgumentParser:
     # Top level optional flags for backward compatibility
     parser.add_argument("--src", help="Source directory (e.g., /Volumes/EOS_DIGITAL)")
     parser.add_argument("--dest", help="Destination base directory")
-    parser.add_argument("--move", action="store_true", help="Move files instead of copying")
-    parser.add_argument("--copy", action="store_true", help="Copy files (default)")
+    parser.add_argument("--delete-source", "--delete-after-import", "--move", action="store_true", dest="delete_source", help="Delete source files after verified import")
+    parser.add_argument("--keep-source", "--copy", action="store_true", dest="keep_source", help="Keep source files on SD card (default)")
     parser.add_argument("--upload", action="store_true", help="Trigger Google Photos upload")
     parser.add_argument("--no-upload", action="store_true", help="Disable Google Photos upload")
     parser.add_argument("--volume-name", help="Volume profile name from matrix")
@@ -254,8 +254,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("--src", help="Source directory (e.g., /Volumes/EOS_DIGITAL)")
     p_import.add_argument("--dest", help="Destination base directory")
     p_import.add_argument("--volume-name", help="Volume profile name in config matrix")
-    p_import.add_argument("--move", action="store_true", help="Move files instead of copying")
-    p_import.add_argument("--copy", action="store_true", help="Copy files (default)")
+    p_import.add_argument("--delete-source", "--delete-after-import", "--move", action="store_true", dest="delete_source", help="Delete source files after verified import")
+    p_import.add_argument("--keep-source", "--copy", action="store_true", dest="keep_source", help="Keep source files on SD card (default)")
     p_import.add_argument("--upload", action="store_true", help="Trigger Google Photos upload")
     p_import.add_argument("--no-upload", action="store_true", help="Disable Google Photos upload")
 
@@ -269,8 +269,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--src", help="Source directory (e.g., /Volumes/EOS_DIGITAL)")
     p_sync.add_argument("--dest", help="Destination base directory")
     p_sync.add_argument("--volume-name", help="Volume profile name in config matrix")
-    p_sync.add_argument("--move", action="store_true", help="Move files instead of copying")
-    p_sync.add_argument("--copy", action="store_true", help="Copy files (default)")
+    p_sync.add_argument("--delete-source", "--delete-after-import", "--move", action="store_true", dest="delete_source", help="Delete source files after verified import")
+    p_sync.add_argument("--keep-source", "--copy", action="store_true", dest="keep_source", help="Keep source files on SD card (default)")
 
     # watch
     p_watch = subparsers.add_parser("watch", help="Run SD card watcher daemon in foreground")
@@ -293,9 +293,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_config.add_argument("--album", help="Google Photos album name to bind to volume")
     p_config.add_argument("--upload", action="store_true", help="Enable upload for volume")
     p_config.add_argument("--no-upload", action="store_true", help="Disable upload for volume")
-    p_config.add_argument("--move", action="store_true", help="Use move for volume")
-    p_config.add_argument("--copy", action="store_true", help="Use copy for volume")
-    p_config.add_argument("--delete-after-import", action="store_true", help="Delete from source after import")
+    p_config.add_argument("--delete-source", "--delete-after-import", "--move", action="store_true", dest="delete_source", help="Delete from source after import")
+    p_config.add_argument("--keep-source", "--copy", action="store_true", dest="keep_source", help="Keep source files on SD card")
 
     # status
     subparsers.add_parser("status", help="Show photo library statistics and upload status")

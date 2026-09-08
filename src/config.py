@@ -37,7 +37,6 @@ class VolumeConfig:
     dest_base_dir: Optional[str] = None
     folder_structure: Optional[str] = None
     delete_after_import: Optional[bool] = None
-    use_move: Optional[bool] = None
     upload: UploadConfig = field(default_factory=UploadConfig)
     supported_extensions: Optional[List[str]] = None
 
@@ -46,7 +45,6 @@ class DefaultsConfig:
     dest_base_dir: str = "~/local/photos"
     folder_structure: str = "%Y-%m-%d"
     delete_after_import: bool = False
-    use_move: bool = False
     supported_extensions: List[str] = field(default_factory=lambda: list(DEFAULT_EXTENSIONS))
 
 @dataclass
@@ -59,11 +57,13 @@ class Config:
         "EOS_DIGITAL": VolumeConfig(
             dest_base_dir="~/local/photos/canon",
             folder_structure="%Y-%m-%d",
+            delete_after_import=False,
             upload=UploadConfig(enabled=True, google_account="default", album="Canon RAW")
         ),
         "CANON_SD": VolumeConfig(
             dest_base_dir="~/local/photos/canon",
             folder_structure="%Y-%m-%d",
+            delete_after_import=False,
             upload=UploadConfig(enabled=True, google_account="default", album=None)
         )
     })
@@ -86,7 +86,6 @@ class Config:
             dest_base_dir=vol.dest_base_dir or self.defaults.dest_base_dir,
             folder_structure=vol.folder_structure or self.defaults.folder_structure,
             delete_after_import=vol.delete_after_import if vol.delete_after_import is not None else self.defaults.delete_after_import,
-            use_move=vol.use_move if vol.use_move is not None else self.defaults.use_move,
             upload=vol.upload if vol.upload is not None else UploadConfig(enabled=True, google_account="default"),
             supported_extensions=vol.supported_extensions or self.defaults.supported_extensions
         )
@@ -94,7 +93,6 @@ class Config:
     def get_google_account(self, account_name: str = "default") -> GoogleAccountConfig:
         if account_name in self.google_accounts:
             return self.google_accounts[account_name]
-        # Return fallback with named paths
         return GoogleAccountConfig(
             credentials_path=str(DEFAULT_CONFIG_DIR / f"credentials_{account_name}.json"),
             token_path=str(DEFAULT_CONFIG_DIR / f"token_{account_name}.json")
@@ -118,7 +116,6 @@ class Config:
         volume_name: str,
         dest_base_dir: Optional[str] = None,
         folder_structure: Optional[str] = None,
-        use_move: Optional[bool] = None,
         delete_after_import: Optional[bool] = None,
         upload_enabled: Optional[bool] = None,
         google_account: Optional[str] = None,
@@ -139,7 +136,6 @@ class Config:
         new_vol = VolumeConfig(
             dest_base_dir=dest_base_dir if dest_base_dir is not None else existing.dest_base_dir,
             folder_structure=folder_structure if folder_structure is not None else existing.folder_structure,
-            use_move=use_move if use_move is not None else existing.use_move,
             delete_after_import=delete_after_import if delete_after_import is not None else existing.delete_after_import,
             upload=up,
             supported_extensions=existing.supported_extensions
@@ -169,10 +165,6 @@ class Config:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            # Handle migration from legacy flat config if present
-            if "monitored_volumes" in data and "volumes" not in data:
-                return cls._migrate_legacy_config(data, path)
-
             # Parse defaults
             def_data = data.get("defaults", {})
             defaults = DefaultsConfig(**{k: v for k, v in def_data.items() if k in DefaultsConfig.__dataclass_fields__})
@@ -198,29 +190,6 @@ class Config:
         except Exception as e:
             print(f"Warning: Failed to load config from {path} ({e}). Using default config.")
             return cls()
-
-    @classmethod
-    def _migrate_legacy_config(cls, data: dict, path: Path) -> "Config":
-        """Migrate legacy flat config to matrix JSON structure."""
-        cfg = cls()
-        monitored = data.get("monitored_volumes", [])
-        legacy_dest = data.get("dest_base_dir", "~/local/photos")
-        legacy_upload = data.get("auto_upload_to_gphotos", True)
-        legacy_album = data.get("gphotos_album")
-        legacy_move = data.get("use_move", False)
-
-        cfg.defaults.dest_base_dir = legacy_dest
-        cfg.defaults.use_move = legacy_move
-
-        cfg.volumes = {}
-        for vol_name in monitored:
-            cfg.volumes[vol_name] = VolumeConfig(
-                dest_base_dir=legacy_dest,
-                upload=UploadConfig(enabled=legacy_upload, google_account="default", album=legacy_album)
-            )
-
-        cfg.save(path)
-        return cfg
 
     def save(self, config_path: Optional[Path] = None) -> None:
         path = config_path or DEFAULT_CONFIG_FILE

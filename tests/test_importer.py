@@ -31,7 +31,7 @@ def test_import_and_collision_handling(tmp_path):
     cfg = Config(
         defaults=DefaultsConfig(
             dest_base_dir=str(dest_dir),
-            use_move=False
+            delete_after_import=False
         ),
         volumes={
             "sd_card": VolumeConfig(

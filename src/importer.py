@@ -158,8 +158,8 @@ def import_photos(
                     target_file_path.unlink(missing_ok=True)
                     raise IOError(f"Checksum mismatch on copy for {file_path.name}")
 
-                # Optional delete from source if move mode or delete_after_import is enabled
-                if vol_cfg.use_move or vol_cfg.delete_after_import:
+                # Optional delete from source if delete_after_import is enabled
+                if vol_cfg.delete_after_import:
                     file_path.unlink(missing_ok=True)
 
             # Record in SQLite database with volume and assigned Google account

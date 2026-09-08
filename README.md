@@ -49,7 +49,6 @@ An automated tool designed for macOS to automatically import Canon RAW photos (`
     "dest_base_dir": "~/local/photos",
     "folder_structure": "%Y-%m-%d",
     "delete_after_import": false,
-    "use_move": false,
     "supported_extensions": [
       ".cr2", ".cr3", ".crw", ".jpg", ".jpeg", ".png", ".heic", ".tiff", ".mp4", ".mov", ".avi"
     ]
