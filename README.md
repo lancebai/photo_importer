@@ -1,18 +1,20 @@
-# 📷 Canon RAW Photo Importer & Google Photos Sync (macOS)
+# 📷 Canon RAW Photo Importer & Google Photos Matrix Sync (macOS)
 
-An automated tool designed for macOS to automatically import Canon RAW photos (`.CR2`, `.CR3`, `.CRW`) and companion media from SD cards into an organized local directory structure, verified with SHA256 checksums, and sync them seamlessly to Google Photos.
+An automated tool designed for macOS to automatically import Canon RAW photos (`.CR2`, `.CR3`, `.CRW`) and companion media from SD cards into custom local directories, verified with SHA256 checksums, and sync them to Google Photos with **Per-Volume Matrix Configurations** and **Multi-Account Google Authentication**.
 
 ---
 
 ## 🚀 Key Features
 
-- **SD Card Auto-Detection & Whitelist**: Automatically triggers when your specified Canon SD card (e.g. `EOS_DIGITAL`) is plugged in.
-- **Background Automation (macOS `launchd`)**: Runs silently with 0% CPU/RAM idle overhead using macOS native launch agents.
+- **JSON Matrix Configuration**: Configure different SD cards with distinct local destinations, date folder rules, upload switches, and target albums.
+- **Multiple Google Accounts**: Bind specific SD cards to specific Google accounts (e.g., `default`, `personal`, `work`).
+- **Configurable Upload Routing**: Enable or disable Google Photos upload per volume, or route to specific albums.
+- **SD Card Auto-Detection**: Automatically detects when a whitelisted Canon SD card (e.g. `EOS_DIGITAL`) is plugged in.
+- **Background Automation (macOS `launchd`)**: Runs silently with 0% CPU/RAM idle overhead using native macOS launch agents.
 - **Canon RAW & Media Support**: Handles `.CR2`, `.CR3`, `.CRW`, `.JPG`, `.PNG`, `.HEIC`, `.MP4`, `.MOV`.
 - **EXIF Capture Date Organization**: Sorts media into structured folders (`YYYY-MM-DD/` or `YYYY/YYYY-MM-DD/`) using true capture timestamps (`DateTimeOriginal`).
 - **Integrity Verification**: Verifies transfers using SHA256 checksums before updating sync records.
 - **Deduplication Engine**: Built-in SQLite database prevents duplicate local imports and duplicate Google Photos uploads.
-- **Google Photos Upload**: High-performance chunked uploads directly to your Google Photos library with album support and auto-retry.
 - **Native macOS Notifications**: Desktop banner alerts when imports start and complete.
 
 ---
@@ -33,96 +35,115 @@ An automated tool designed for macOS to automatically import Canon RAW photos (`
 
 ---
 
-## ⚙️ Configuration
+## ⚙️ Configuration Matrix (`~/.config/photo_importer/config.json`)
 
-View and customize your configuration at `~/.config/photo_importer/config.json`:
-
+### View Matrix Configuration
 ```bash
-# View current settings
 ./import_photos.py config show
-
-# Add your SD card volume label to whitelist
-./import_photos.py config add-sd EOS_DIGITAL
-./import_photos.py config add-sd CANON_64GB
-
-# Remove an SD card volume label from whitelist
-./import_photos.py config remove-sd CANON_64GB
 ```
 
-### Config Options (`~/.config/photo_importer/config.json`)
+### JSON Matrix Structure
 ```json
 {
-  "monitored_volumes": ["EOS_DIGITAL", "CANON_SD"],
-  "dest_base_dir": "~/local/photos",
-  "folder_structure": "%Y-%m-%d",
-  "delete_after_import": false,
-  "use_move": false,
-  "auto_upload_to_gphotos": true,
-  "gphotos_album": null,
-  "google_credentials_path": "~/.config/photo_importer/credentials.json",
-  "google_token_path": "~/.config/photo_importer/token.json",
-  "db_path": "~/.config/photo_importer/library.db"
+  "defaults": {
+    "dest_base_dir": "~/local/photos",
+    "folder_structure": "%Y-%m-%d",
+    "delete_after_import": false,
+    "use_move": false,
+    "supported_extensions": [
+      ".cr2", ".cr3", ".crw", ".jpg", ".jpeg", ".png", ".heic", ".tiff", ".mp4", ".mov", ".avi"
+    ]
+  },
+  "google_accounts": {
+    "default": {
+      "credentials_path": "~/.config/photo_importer/credentials_default.json",
+      "token_path": "~/.config/photo_importer/token_default.json"
+    },
+    "work": {
+      "credentials_path": "~/.config/photo_importer/credentials_work.json",
+      "token_path": "~/.config/photo_importer/token_work.json"
+    }
+  },
+  "volumes": {
+    "EOS_DIGITAL": {
+      "dest_base_dir": "~/local/photos/canon",
+      "upload": {
+        "enabled": true,
+        "google_account": "default",
+        "album": "Canon RAW"
+      }
+    },
+    "WORK_SD": {
+      "dest_base_dir": "~/local/photos/work",
+      "upload": {
+        "enabled": true,
+        "google_account": "work",
+        "album": "Work Portfolio"
+      }
+    },
+    "DRONE_SD": {
+      "dest_base_dir": "~/local/photos/drone",
+      "upload": {
+        "enabled": false
+      }
+    }
+  }
 }
 ```
 
 ---
 
-## ☁️ Setting Up Google Photos Upload
+## ☁️ Setting Up Google Accounts
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/).
-2. Create a new project (e.g. `My-Photo-Importer`).
-3. Navigate to **APIs & Services > Library** and enable **Photos Library API**.
-4. Navigate to **APIs & Services > OAuth consent screen**:
-   - User Type: **External** (or Internal for Workspace).
-   - Add your own Google account email under **Test Users**.
-5. Navigate to **APIs & Services > Credentials**:
-   - Click **Create Credentials > OAuth client ID**.
-   - Application Type: **Desktop App**.
-   - Download the client credentials JSON.
-6. Save the downloaded JSON file to:
+1. Obtain your OAuth Client ID JSON from [Google Cloud Console](https://console.cloud.google.com/) with **Photos Library API** enabled.
+2. Add the account to your configuration:
    ```bash
-   mkdir -p ~/.config/photo_importer
-   cp ~/Downloads/client_secret_*.json ~/.config/photo_importer/credentials.json
+   ./import_photos.py config add-account default --creds ~/.config/photo_importer/credentials_default.json
+   ./import_photos.py config add-account work --creds ~/.config/photo_importer/credentials_work.json
    ```
-7. Authorize your account:
+3. Authorize each account via your browser:
    ```bash
-   ./import_photos.py auth
+   ./import_photos.py auth --account default
+   ./import_photos.py auth --account work
    ```
-   *(A browser window will open asking you to sign in and grant access. The token will be saved and auto-refreshed thereafter.)*
 
 ---
 
 ## 💻 CLI Commands & Usage
 
-### 1. Manual Import
+### 1. Volume Matrix Configuration
 ```bash
-# Import from specific source folder or SD card
-./import_photos.py import --src /Volumes/EOS_DIGITAL --dest ~/local/photos
+# Configure volume with specific destination, account, and album
+./import_photos.py config set-volume EOS_DIGITAL \
+    --dest ~/local/photos/canon \
+    --account default \
+    --album "Canon RAW" \
+    --upload
+
+# Configure pure local import without uploading
+./import_photos.py config set-volume DRONE_SD \
+    --dest ~/local/photos/drone \
+    --no-upload
+
+# Remove volume from matrix
+./import_photos.py config remove-volume DRONE_SD
+```
+
+### 2. Manual Import & Sync
+```bash
+# Import from specific source folder or SD card using its matrix profile
+./import_photos.py import --src /Volumes/EOS_DIGITAL
 
 # Import and immediately trigger Google Photos upload
-./import_photos.py sync --src /Volumes/EOS_DIGITAL
+./import_photos.py sync --src /Volumes/WORK_SD
 
-# Move files instead of copying (deletes from SD card after verified copy)
-./import_photos.py import --src /Volumes/EOS_DIGITAL --move
+# Upload pending files for a specific account
+./import_photos.py upload --account work
 ```
 
-### 2. Google Photos Upload
+### 3. Background Watcher Service
 ```bash
-# Upload all pending files in the SQLite queue
-./import_photos.py upload
-
-# Upload into a specific album
-./import_photos.py upload --album "2026 Canon Shots"
-```
-
-### 3. Check Status
-```bash
-./import_photos.py status
-```
-
-### 4. Background Watcher Service
-```bash
-# Run watcher in foreground (useful for testing)
+# Run watcher in foreground (for testing)
 ./import_photos.py watch
 
 # Install as macOS background LaunchAgent (runs automatically on login)
@@ -130,11 +151,6 @@ View and customize your configuration at `~/.config/photo_importer/config.json`:
 
 # Check background service status
 ./import_photos.py service status
-
-# Start / Stop / Uninstall service
-./import_photos.py service stop
-./import_photos.py service start
-./import_photos.py service uninstall
 ```
 
 ---
