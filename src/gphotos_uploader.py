@@ -6,7 +6,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Any
 import requests
 from google.oauth2.credentials import Credentials
 
-from .config import Config
+from .config import Config, GoogleAccountConfig
 from .db import Database
 from .gphotos_auth import get_credentials
 from .notifications import send_notification
@@ -39,8 +39,6 @@ def upload_file_bytes(
         "X-Goog-Upload-Protocol": "raw",
         "X-Goog-Upload-File-Name": file_path.name
     })
-
-    file_size = file_path.stat().st_size
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -124,88 +122,116 @@ def get_or_create_album(album_title: str, creds: Credentials) -> Optional[str]:
 def upload_pending_photos(
     config: Config,
     db: Database,
+    google_account: Optional[str] = None,
     limit: Optional[int] = None,
     interactive: bool = True,
     notify: bool = True
 ) -> Dict[str, Any]:
     """
-    Upload all pending media files in the database to Google Photos.
+    Upload pending media files in the database to Google Photos, grouped by Google account.
     """
-    pending = db.get_pending_uploads(limit=limit)
+    pending = db.get_pending_uploads(google_account=google_account, limit=limit)
     if not pending:
         return {"uploaded": 0, "failed": 0, "skipped": 0}
 
-    creds = get_credentials(
-        credentials_path=config.expanded_credentials_path,
-        token_path=config.expanded_token_path,
-        interactive=interactive
-    )
+    # Group pending items by google_account
+    by_account: Dict[str, List[Dict[str, Any]]] = {}
+    for item in pending:
+        acc = item.get("google_account") or "default"
+        if acc == "none":
+            continue
+        by_account.setdefault(acc, []).append(item)
 
-    if not creds:
-        print("Skipping Google Photos upload: Google account is not authenticated.")
-        return {"uploaded": 0, "failed": 0, "skipped": len(pending), "error": "Unauthenticated"}
+    total_uploaded = 0
+    total_failed = 0
 
-    album_id = None
-    if config.gphotos_album:
-        album_id = get_or_create_album(config.gphotos_album, creds)
+    for acc_name, items in by_account.items():
+        acc_cfg = config.get_google_account(acc_name)
+        creds = get_credentials(
+            credentials_path=acc_cfg.expanded_credentials_path,
+            token_path=acc_cfg.expanded_token_path,
+            account_name=acc_name,
+            interactive=interactive
+        )
 
-    uploaded_count = 0
-    failed_count = 0
+        if not creds:
+            print(f"Skipping upload for account '{acc_name}': not authenticated.")
+            continue
 
-    print(f"Uploading {len(pending)} pending file(s) to Google Photos...")
+        print(f"\n☁️ Uploading {len(items)} file(s) via Google Account '{acc_name}'...")
 
-    # Upload files in batches of up to 50 (Google Photos API limit for batchCreate)
-    BATCH_SIZE = 10
-    for i in range(0, len(pending), BATCH_SIZE):
-        batch = pending[i:i + BATCH_SIZE]
-        upload_tokens = []
+        # Cache album IDs per album title for this account
+        album_cache: Dict[str, Optional[str]] = {}
 
-        for record in batch:
-            file_id = record["id"]
-            file_path = Path(record["local_path"])
-            fname = record["original_filename"]
+        BATCH_SIZE = 10
+        for i in range(0, len(items), BATCH_SIZE):
+            batch = items[i:i + BATCH_SIZE]
+            upload_tokens = []
 
-            if not file_path.exists():
-                db.mark_upload_failed(file_id, "Local file not found")
-                failed_count += 1
-                continue
+            for record in batch:
+                file_id = record["id"]
+                file_path = Path(record["local_path"])
+                fname = record["original_filename"]
+                v_name = record.get("volume_name")
 
-            try:
-                db.mark_uploading(file_id)
-                print(f"  Uploading ({record['id']}) {fname} ({round(record['file_size'] / (1024*1024), 2)} MB)...")
-                token = upload_file_bytes(file_path, creds)
-                upload_tokens.append((file_id, token, fname))
-            except Exception as e:
-                db.mark_upload_failed(file_id, str(e))
-                failed_count += 1
-                print(f"  ❌ Upload failed for {fname}: {e}")
+                # Resolve album from volume config if configured
+                vol_cfg = config.get_resolved_volume_config(v_name) if v_name else None
+                target_album_title = vol_cfg.upload.album if (vol_cfg and vol_cfg.upload) else None
 
-        if upload_tokens:
-            try:
-                results = batch_create_media_items(upload_tokens, creds, album_id=album_id)
-                for (db_id, _, fname), res_item in zip(upload_tokens, results):
-                    status = res_item.get("status", {})
-                    if status.get("message") in ("Success", "OK", None) and "mediaItem" in res_item:
-                        g_id = res_item["mediaItem"].get("id", "")
-                        db.mark_uploaded(db_id, g_id)
-                        uploaded_count += 1
-                        print(f"  ✅ Registered {fname} in Google Photos.")
-                    else:
-                        err_msg = status.get("message", "Unknown batch error")
-                        db.mark_upload_failed(db_id, err_msg)
-                        failed_count += 1
-                        print(f"  ❌ Registration failed for {fname}: {err_msg}")
-            except Exception as e:
-                print(f"  ❌ Batch creation error: {e}")
-                for db_id, _, _ in upload_tokens:
-                    db.mark_upload_failed(db_id, str(e))
-                    failed_count += 1
+                album_id = None
+                if target_album_title:
+                    if target_album_title not in album_cache:
+                        album_cache[target_album_title] = get_or_create_album(target_album_title, creds)
+                    album_id = album_cache.get(target_album_title)
 
-    if notify and uploaded_count > 0:
+                if not file_path.exists():
+                    db.mark_upload_failed(file_id, "Local file not found")
+                    total_failed += 1
+                    continue
+
+                try:
+                    db.mark_uploading(file_id)
+                    size_mb = round(record["file_size"] / (1024 * 1024), 2)
+                    print(f"  Uploading ({record['id']}) {fname} ({size_mb} MB) -> [{acc_name}]...")
+                    token = upload_file_bytes(file_path, creds)
+                    upload_tokens.append((file_id, token, fname, album_id))
+                except Exception as e:
+                    db.mark_upload_failed(file_id, str(e))
+                    total_failed += 1
+                    print(f"  ❌ Upload failed for {fname}: {e}")
+
+            if upload_tokens:
+                # Group by album_id for batch creation
+                by_album: Dict[Optional[str], List[Tuple[int, str, str]]] = {}
+                for f_id, tok, fn, a_id in upload_tokens:
+                    by_album.setdefault(a_id, []).append((f_id, tok, fn))
+
+                for alb_id, album_batch in by_album.items():
+                    try:
+                        results = batch_create_media_items(album_batch, creds, album_id=alb_id)
+                        for (db_id, _, fname), res_item in zip(album_batch, results):
+                            status = res_item.get("status", {})
+                            if status.get("message") in ("Success", "OK", None) and "mediaItem" in res_item:
+                                g_id = res_item["mediaItem"].get("id", "")
+                                db.mark_uploaded(db_id, g_id)
+                                total_uploaded += 1
+                                print(f"  ✅ Registered {fname} in Google Photos.")
+                            else:
+                                err_msg = status.get("message", "Unknown batch error")
+                                db.mark_upload_failed(db_id, err_msg)
+                                total_failed += 1
+                                print(f"  ❌ Registration failed for {fname}: {err_msg}")
+                    except Exception as e:
+                        print(f"  ❌ Batch creation error: {e}")
+                        for db_id, _, _ in album_batch:
+                            db.mark_upload_failed(db_id, str(e))
+                            total_failed += 1
+
+    if notify and total_uploaded > 0:
         send_notification(
             title="☁️ Google Photos Upload Complete",
-            subtitle=f"{uploaded_count} file(s) uploaded",
+            subtitle=f"{total_uploaded} file(s) uploaded",
             message=f"Uploaded to your Google Photos library"
         )
 
-    return {"uploaded": uploaded_count, "failed": failed_count, "skipped": 0}
+    return {"uploaded": total_uploaded, "failed": total_failed, "skipped": 0}

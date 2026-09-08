@@ -1,12 +1,16 @@
 from unittest.mock import patch, MagicMock
 from pathlib import Path
-from src.config import Config
+from src.config import Config, VolumeConfig, UploadConfig
 from src.db import Database
 from src.watcher import check_and_process_volumes
 
 def test_check_and_process_volumes_whitelist(tmp_path):
     cfg = Config(
-        monitored_volumes=["EOS_DIGITAL"],
+        volumes={
+            "EOS_DIGITAL": VolumeConfig(
+                upload=UploadConfig(enabled=True, google_account="default")
+            )
+        },
         db_path=str(tmp_path / "test.db")
     )
     db = Database(tmp_path / "test.db")

@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
-from .config import Config
+from .config import Config, VolumeConfig
 from .db import Database
 from .metadata import compute_sha256, extract_file_info
 from .notifications import send_notification
@@ -97,6 +97,7 @@ def import_photos(
     source_dir: Path,
     config: Config,
     db: Database,
+    volume_name: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
     notify: bool = True
 ) -> ImportResult:
@@ -104,8 +105,10 @@ def import_photos(
     Import photos from source directory into organized local destination directory.
     """
     source_path = Path(source_dir).expanduser().resolve()
-    dest_base_path = config.expanded_dest_dir
+    v_name = volume_name or source_path.name
+    vol_cfg: VolumeConfig = config.get_resolved_volume_config(v_name)
 
+    dest_base_path = Path(vol_cfg.dest_base_dir or config.defaults.dest_base_dir).expanduser()
     result = ImportResult()
 
     if not source_path.exists() or not source_path.is_dir():
@@ -113,7 +116,7 @@ def import_photos(
         result.errors.append(err)
         return result
 
-    media_files = scan_directory_for_media(source_path, config.supported_extensions)
+    media_files = scan_directory_for_media(source_path, vol_cfg.supported_extensions or config.defaults.supported_extensions)
     total_files = len(media_files)
 
     if total_files == 0:
@@ -122,8 +125,8 @@ def import_photos(
     if notify:
         send_notification(
             title="📷 Photo Importer",
-            subtitle=f"Found {total_files} media files",
-            message=f"Starting import from {source_path.name}..."
+            subtitle=f"Found {total_files} media files on {v_name}",
+            message=f"Starting import to {dest_base_path}..."
         )
 
     for idx, file_path in enumerate(media_files, start=1):
@@ -140,8 +143,8 @@ def import_photos(
                 result.skipped_count += 1
                 continue
 
-            # Determine date folder based on config format
-            date_folder_name = capture_date.strftime(config.folder_structure)
+            # Determine date folder based on volume config format
+            date_folder_name = capture_date.strftime(vol_cfg.folder_structure or config.defaults.folder_structure)
             target_dir = dest_base_path / date_folder_name
             target_file_path, is_identical = get_unique_destination_path(target_dir, file_path.name, file_hash)
 
@@ -156,10 +159,13 @@ def import_photos(
                     raise IOError(f"Checksum mismatch on copy for {file_path.name}")
 
                 # Optional delete from source if move mode or delete_after_import is enabled
-                if config.use_move or config.delete_after_import:
+                if vol_cfg.use_move or vol_cfg.delete_after_import:
                     file_path.unlink(missing_ok=True)
 
-            # Record in SQLite database
+            # Record in SQLite database with volume and assigned Google account
+            g_account = vol_cfg.upload.google_account if (vol_cfg.upload and vol_cfg.upload.enabled) else "none"
+            upload_status = "PENDING" if (vol_cfg.upload and vol_cfg.upload.enabled) else "SKIPPED"
+
             db_id = db.add_imported_file(
                 file_hash=file_hash,
                 original_filename=file_path.name,
@@ -167,7 +173,9 @@ def import_photos(
                 local_path=str(target_file_path),
                 file_size=file_size,
                 capture_time=capture_date,
-                upload_status="PENDING"
+                upload_status=upload_status,
+                google_account=g_account,
+                volume_name=v_name
             )
 
             result.imported_count += 1
@@ -178,7 +186,9 @@ def import_photos(
                 "local_path": str(target_file_path),
                 "hash": file_hash,
                 "size": file_size,
-                "capture_time": capture_date.isoformat()
+                "capture_time": capture_date.isoformat(),
+                "volume_name": v_name,
+                "google_account": g_account
             })
 
         except Exception as e:
@@ -191,7 +201,7 @@ def import_photos(
         size_mb = round(result.total_bytes / (1024 * 1024), 1)
         send_notification(
             title="✅ Photo Import Complete",
-            subtitle=f"{result.imported_count} files ({size_mb} MB) imported",
+            subtitle=f"{result.imported_count} files ({size_mb} MB) imported from {v_name}",
             message=f"Saved to {dest_base_path}"
         )
 

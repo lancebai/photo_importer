@@ -29,12 +29,23 @@ class Database:
                     imported_at TEXT NOT NULL,
                     upload_status TEXT NOT NULL DEFAULT 'PENDING',
                     google_photo_id TEXT,
+                    google_account TEXT DEFAULT 'default',
+                    volume_name TEXT,
                     uploaded_at TEXT,
                     error_message TEXT
                 )
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_hash ON media_files(file_hash)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_upload_status ON media_files(upload_status)")
+            
+            # Auto-migrate columns if missing in existing database
+            cursor.execute("PRAGMA table_info(media_files)")
+            existing_columns = {row["name"] for row in cursor.fetchall()}
+            if "google_account" not in existing_columns:
+                cursor.execute("ALTER TABLE media_files ADD COLUMN google_account TEXT DEFAULT 'default'")
+            if "volume_name" not in existing_columns:
+                cursor.execute("ALTER TABLE media_files ADD COLUMN volume_name TEXT")
+
             conn.commit()
 
     def has_file_hash(self, file_hash: str) -> bool:
@@ -58,7 +69,9 @@ class Database:
         local_path: str,
         file_size: int,
         capture_time: Optional[datetime],
-        upload_status: str = "PENDING"
+        upload_status: str = "PENDING",
+        google_account: str = "default",
+        volume_name: Optional[str] = None
     ) -> int:
         imported_at = datetime.now().isoformat()
         cap_str = capture_time.isoformat() if capture_time else None
@@ -68,22 +81,30 @@ class Database:
             cursor.execute("""
                 INSERT INTO media_files (
                     file_hash, original_filename, source_path, local_path,
-                    file_size, capture_time, imported_at, upload_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    file_size, capture_time, imported_at, upload_status,
+                    google_account, volume_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(file_hash) DO UPDATE SET
                     local_path = excluded.local_path,
-                    original_filename = excluded.original_filename
-            """, (file_hash, original_filename, source_path, local_path, file_size, cap_str, imported_at, upload_status))
+                    original_filename = excluded.original_filename,
+                    google_account = excluded.google_account,
+                    volume_name = excluded.volume_name
+            """, (file_hash, original_filename, source_path, local_path, file_size, cap_str, imported_at, upload_status, google_account, volume_name))
             conn.commit()
             return cursor.lastrowid or 0
 
-    def get_pending_uploads(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_pending_uploads(self, google_account: Optional[str] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            query = "SELECT * FROM media_files WHERE upload_status IN ('PENDING', 'FAILED') ORDER BY id ASC"
+            query = "SELECT * FROM media_files WHERE upload_status IN ('PENDING', 'FAILED')"
+            params = []
+            if google_account:
+                query += " AND google_account = ?"
+                params.append(google_account)
+            query += " ORDER BY id ASC"
             if limit:
                 query += f" LIMIT {int(limit)}"
-            cursor.execute(query)
+            cursor.execute(query, tuple(params))
             return [dict(row) for row in cursor.fetchall()]
 
     def mark_uploading(self, file_id: int) -> None:
@@ -132,10 +153,15 @@ class Database:
             cursor.execute("SELECT COUNT(*) FROM media_files WHERE upload_status = 'FAILED'")
             failed_count = cursor.fetchone()[0]
 
+            # Breakdown by volume and account
+            cursor.execute("SELECT DISTINCT google_account FROM media_files")
+            accounts = [r[0] for r in cursor.fetchall() if r[0]]
+
             return {
                 "total_files": total_count,
                 "total_size_mb": round(total_bytes / (1024 * 1024), 2),
                 "uploaded_count": uploaded_count,
                 "pending_count": pending_count,
                 "failed_count": failed_count,
+                "accounts": accounts
             }

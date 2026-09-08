@@ -1,8 +1,8 @@
 from datetime import datetime
 from pathlib import Path
-from src.config import Config
+from src.config import Config, DefaultsConfig, VolumeConfig, UploadConfig
 from src.db import Database
-from src.importer import import_photos, scan_directory_for_media, get_unique_destination_path
+from src.importer import import_photos, scan_directory_for_media
 
 def test_scan_directory(tmp_path):
     (tmp_path / "IMG_0001.CR3").write_bytes(b"raw data 1")
@@ -29,19 +29,25 @@ def test_import_and_collision_handling(tmp_path):
     file2.write_bytes(b"canon raw content 2")
 
     cfg = Config(
-        dest_base_dir=str(dest_dir),
-        monitored_volumes=["sd_card"],
-        auto_upload_to_gphotos=False,
-        use_move=False
+        defaults=DefaultsConfig(
+            dest_base_dir=str(dest_dir),
+            use_move=False
+        ),
+        volumes={
+            "sd_card": VolumeConfig(
+                dest_base_dir=str(dest_dir),
+                upload=UploadConfig(enabled=False)
+            )
+        }
     )
     db = Database(tmp_path / "test.db")
 
     # First import
-    res1 = import_photos(src_dir, cfg, db, notify=False)
+    res1 = import_photos(src_dir, cfg, db, volume_name="sd_card", notify=False)
     assert res1.imported_count == 2
     assert res1.skipped_count == 0
 
     # Second import of same SD card should skip already imported files
-    res2 = import_photos(src_dir, cfg, db, notify=False)
+    res2 = import_photos(src_dir, cfg, db, volume_name="sd_card", notify=False)
     assert res2.imported_count == 0
     assert res2.skipped_count == 2
