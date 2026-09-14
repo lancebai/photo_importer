@@ -44,9 +44,9 @@ def cmd_import(args, config: Config, db: Database):
 
     if args.dest:
         vol_cfg.dest_base_dir = args.dest
-    if args.delete_source or args.move:
+    if getattr(args, "delete_source", False):
         vol_cfg.delete_after_import = True
-    if args.keep_source or args.copy:
+    elif getattr(args, "keep_source", False):
         vol_cfg.delete_after_import = False
 
     print(f"Scanning '{src}' (Volume: {v_name})...")
@@ -158,9 +158,9 @@ def cmd_config(args, config: Config, db: Database):
             upload_en = False
 
         del_after = None
-        if args.delete_source or args.move or args.delete_after_import:
+        if getattr(args, "delete_source", False):
             del_after = True
-        elif args.keep_source or args.copy:
+        elif getattr(args, "keep_source", False):
             del_after = False
 
         config.set_volume_config(
