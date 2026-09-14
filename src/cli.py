@@ -7,8 +7,6 @@ from typing import Optional
 
 from .config import Config, GoogleAccountConfig, VolumeConfig, UploadConfig
 from .db import Database
-from .gphotos_auth import get_credentials
-from .gphotos_uploader import upload_pending_photos
 from .importer import find_available_volumes, import_photos
 from .service import get_service_status, install_service, start_service, stop_service, uninstall_service
 from .watcher import run_watcher
@@ -72,11 +70,13 @@ def cmd_import(args, config: Config, db: Database):
     # Check upload condition
     should_upload = args.upload or (vol_cfg.upload.enabled and not args.no_upload)
     if should_upload and res.imported_count > 0:
+        from .gphotos_uploader import upload_pending_photos
         target_account = vol_cfg.upload.google_account
         print(f"\n☁️ Starting Google Photos upload for account '{target_account}'...")
         upload_pending_photos(config, db, google_account=target_account, interactive=True)
 
 def cmd_upload(args, config: Config, db: Database):
+    from .gphotos_uploader import upload_pending_photos
     account = args.account
     upload_pending_photos(config, db, google_account=account, limit=args.limit, interactive=True)
 
@@ -220,6 +220,7 @@ def cmd_status(args, config: Config, db: Database):
     print("==================================================")
 
 def cmd_auth(args, config: Config, db: Database):
+    from .gphotos_auth import get_credentials
     acc_name = args.account or "default"
     acc_cfg = config.get_google_account(acc_name)
     print(f"Checking Google Photos OAuth2 Authentication for account '{acc_name}'...")
