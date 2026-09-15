@@ -168,7 +168,7 @@ def upload_pending_photos(
         album_cache: Dict[str, Optional[str]] = {}
         album_lock = threading.Lock()
 
-        def process_single_upload(record: Dict[str, Any]) -> Tuple[int, Optional[str], str, Optional[str], Optional[str]]:
+        def process_single_upload(seq_idx: int, record: Dict[str, Any]) -> Tuple[int, int, Optional[str], str, Optional[str], Optional[str]]:
             file_id = record["id"]
             file_path = Path(record["local_path"])
             fname = record["original_filename"]
@@ -186,16 +186,16 @@ def upload_pending_photos(
                     album_id = album_cache.get(target_album_title)
 
             if not file_path.exists():
-                return (file_id, None, fname, album_id, "Local file not found")
+                return (seq_idx, file_id, None, fname, album_id, "Local file not found")
 
             try:
                 db.mark_uploading(file_id)
                 size_mb = round(record["file_size"] / (1024 * 1024), 2)
                 print(f"  [Worker] Uploading ({record['id']}) {fname} ({size_mb} MB)...")
                 token = upload_file_bytes(file_path, creds)
-                return (file_id, token, fname, album_id, None)
+                return (seq_idx, file_id, token, fname, album_id, None)
             except Exception as e:
-                return (file_id, None, fname, album_id, str(e))
+                return (seq_idx, file_id, None, fname, album_id, str(e))
 
         BATCH_SIZE = 20
         for i in range(0, len(items), BATCH_SIZE):
@@ -204,20 +204,23 @@ def upload_pending_photos(
 
             # Execute batch uploads concurrently with ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=workers) as executor:
-                future_to_record = {executor.submit(process_single_upload, rec): rec for rec in batch}
+                future_to_record = {executor.submit(process_single_upload, idx, rec): rec for idx, rec in enumerate(batch)}
                 for future in as_completed(future_to_record):
-                    file_id, token, fname, album_id, error = future.result()
+                    seq_idx, file_id, token, fname, album_id, error = future.result()
                     if error:
                         db.mark_upload_failed(file_id, error)
                         total_failed += 1
                         print(f"  ❌ Upload failed for {fname}: {error}")
                     elif token:
-                        upload_tokens.append((file_id, token, fname, album_id))
+                        upload_tokens.append((seq_idx, file_id, token, fname, album_id))
 
-            # Batch register completed tokens in Google Photos
+            # Strictly sort collected tokens by original chronological sequence before registration
+            upload_tokens.sort(key=lambda item: item[0])
+
+            # Batch register completed tokens in Google Photos in strict chronological order
             if upload_tokens:
                 by_album: Dict[Optional[str], List[Tuple[int, str, str]]] = {}
-                for f_id, tok, fn, a_id in upload_tokens:
+                for _, f_id, tok, fn, a_id in upload_tokens:
                     by_album.setdefault(a_id, []).append((f_id, tok, fn))
 
                 for alb_id, album_batch in by_album.items():

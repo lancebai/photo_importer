@@ -1,10 +1,12 @@
 import os
 import shutil
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple, Dict, Any
 
 from .config import Config, VolumeConfig
 from .db import Database
@@ -98,11 +100,12 @@ def import_photos(
     config: Config,
     db: Database,
     volume_name: Optional[str] = None,
+    max_workers: Optional[int] = None,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
     notify: bool = True
 ) -> ImportResult:
     """
-    Import photos from source directory into organized local destination directory.
+    Import photos from source directory into organized local destination directory using ThreadPoolExecutor.
     """
     source_path = Path(source_dir).expanduser().resolve()
     v_name = volume_name or source_path.name
@@ -122,19 +125,23 @@ def import_photos(
     if total_files == 0:
         return result
 
+    workers = max_workers or getattr(config.defaults, "max_workers", 4) or 4
+
     if notify:
         send_notification(
             title="📷 Photo Importer",
             subtitle=f"Found {total_files} media files on {v_name}",
-            message=f"Starting import to {dest_base_path}..."
+            message=f"Starting import to {dest_base_path} ({workers} workers)..."
         )
 
-    for idx, file_path in enumerate(media_files, start=1):
-        try:
-            if progress_callback:
-                progress_callback(idx, total_files, file_path.name)
+    processed_count = 0
+    count_lock = threading.Lock()
+    dest_path_lock = threading.Lock()
 
-            # Extract EXIF capture date and SHA256
+    def process_file_task(file_path: Path) -> Dict[str, Any]:
+        nonlocal processed_count
+        try:
+            # Extract EXIF capture date, SHA256, and size
             capture_date, file_hash, file_size = extract_file_info(file_path)
 
             # Check if file is already tracked in DB with identical hash and exists locally
@@ -142,13 +149,18 @@ def import_photos(
             if existing_record and Path(existing_record["local_path"]).exists():
                 if vol_cfg.delete_after_import:
                     file_path.unlink(missing_ok=True)
-                result.skipped_count += 1
-                continue
+                with count_lock:
+                    processed_count += 1
+                    if progress_callback:
+                        progress_callback(processed_count, total_files, file_path.name)
+                return {"status": "skipped", "file": file_path.name}
 
             # Determine date folder based on volume config format
             date_folder_name = capture_date.strftime(vol_cfg.folder_structure or config.defaults.folder_structure)
             target_dir = dest_base_path / date_folder_name
-            target_file_path, is_identical = get_unique_destination_path(target_dir, file_path.name, file_hash)
+
+            with dest_path_lock:
+                target_file_path, is_identical = get_unique_destination_path(target_dir, file_path.name, file_hash)
 
             if not is_identical:
                 # Copy file safely
@@ -183,30 +195,58 @@ def import_photos(
                 volume_name=v_name
             )
 
-            result.imported_count += 1
-            result.total_bytes += file_size
-            result.imported_files.append({
-                "id": db_id,
-                "filename": file_path.name,
-                "local_path": str(target_file_path),
-                "hash": file_hash,
-                "size": file_size,
-                "capture_time": capture_date.isoformat(),
-                "volume_name": v_name,
-                "google_account": g_account
-            })
+            with count_lock:
+                processed_count += 1
+                if progress_callback:
+                    progress_callback(processed_count, total_files, file_path.name)
+
+            return {
+                "status": "imported",
+                "item": {
+                    "id": db_id,
+                    "filename": file_path.name,
+                    "local_path": str(target_file_path),
+                    "hash": file_hash,
+                    "size": file_size,
+                    "capture_time": capture_date.isoformat(),
+                    "volume_name": v_name,
+                    "google_account": g_account
+                }
+            }
 
         except Exception as e:
-            err_msg = f"Failed to import {file_path.name}: {e}"
-            result.failed_count += 1
-            result.errors.append(err_msg)
-            print(f"Error: {err_msg}")
+            with count_lock:
+                processed_count += 1
+                if progress_callback:
+                    progress_callback(processed_count, total_files, file_path.name)
+            return {"status": "failed", "file": file_path.name, "error": str(e)}
+
+    # Process files concurrently with ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(process_file_task, f_path) for f_path in media_files]
+        for future in as_completed(futures):
+            res = future.result()
+            st = res["status"]
+            if st == "imported":
+                result.imported_count += 1
+                result.total_bytes += res["item"]["size"]
+                result.imported_files.append(res["item"])
+            elif st == "skipped":
+                result.skipped_count += 1
+            elif st == "failed":
+                result.failed_count += 1
+                err_msg = f"Failed to import {res['file']}: {res['error']}"
+                result.errors.append(err_msg)
+                print(f"Error: {err_msg}")
+
+    # Re-sort imported files strictly by capture_time to ensure chronological order
+    result.imported_files.sort(key=lambda x: x.get("capture_time") or "")
 
     if notify and result.imported_count > 0:
         size_mb = round(result.total_bytes / (1024 * 1024), 1)
         send_notification(
             title="✅ Photo Import Complete",
-            subtitle=f"{result.imported_count} files ({size_mb} MB) imported from {v_name}",
+            subtitle=f"{result.imported_count} files ({size_mb} MB) imported ({workers} workers)",
             message=f"Saved to {dest_base_path}"
         )
 

@@ -105,7 +105,7 @@ class Database:
                 if google_account:
                     query += " AND google_account = ?"
                     params.append(google_account)
-                query += " ORDER BY id ASC"
+                query += " ORDER BY COALESCE(capture_time, imported_at) ASC, id ASC"
                 if limit:
                     query += f" LIMIT {int(limit)}"
                 cursor.execute(query, tuple(params))

@@ -54,11 +54,13 @@ def cmd_import(args, config: Config, db: Database):
     print(f"Delete After Import: {'Yes (free SD space)' if vol_cfg.delete_after_import else 'No (safe copy)'}")
     print(f"Upload Config: Enabled={vol_cfg.upload.enabled}, Account={vol_cfg.upload.google_account}")
 
+    workers = getattr(args, "workers", None)
     res = import_photos(
         source_dir=Path(src),
         config=config,
         db=db,
         volume_name=v_name,
+        max_workers=workers,
         progress_callback=lambda curr, total, name: print(f"[{curr}/{total}] Importing {name}...")
     )
 
