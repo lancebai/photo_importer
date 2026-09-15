@@ -45,6 +45,7 @@ class DefaultsConfig:
     dest_base_dir: str = "~/local/photos"
     folder_structure: str = "%Y-%m-%d"
     delete_after_import: bool = False
+    max_workers: int = 4
     supported_extensions: List[str] = field(default_factory=lambda: list(DEFAULT_EXTENSIONS))
 
 @dataclass

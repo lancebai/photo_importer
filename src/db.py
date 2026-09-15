@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -7,10 +8,11 @@ class Database:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
         self.init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path))
+        conn = sqlite3.connect(str(self.db_path), timeout=30.0)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -76,67 +78,72 @@ class Database:
         imported_at = datetime.now().isoformat()
         cap_str = capture_time.isoformat() if capture_time else None
         
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO media_files (
-                    file_hash, original_filename, source_path, local_path,
-                    file_size, capture_time, imported_at, upload_status,
-                    google_account, volume_name
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(file_hash) DO UPDATE SET
-                    local_path = excluded.local_path,
-                    original_filename = excluded.original_filename,
-                    google_account = excluded.google_account,
-                    volume_name = excluded.volume_name
-            """, (file_hash, original_filename, source_path, local_path, file_size, cap_str, imported_at, upload_status, google_account, volume_name))
-            conn.commit()
-            return cursor.lastrowid or 0
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO media_files (
+                        file_hash, original_filename, source_path, local_path,
+                        file_size, capture_time, imported_at, upload_status,
+                        google_account, volume_name
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(file_hash) DO UPDATE SET
+                        local_path = excluded.local_path,
+                        original_filename = excluded.original_filename,
+                        google_account = excluded.google_account,
+                        volume_name = excluded.volume_name
+                """, (file_hash, original_filename, source_path, local_path, file_size, cap_str, imported_at, upload_status, google_account, volume_name))
+                conn.commit()
+                return cursor.lastrowid or 0
 
     def get_pending_uploads(self, google_account: Optional[str] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            query = "SELECT * FROM media_files WHERE upload_status IN ('PENDING', 'FAILED')"
-            params = []
-            if google_account:
-                query += " AND google_account = ?"
-                params.append(google_account)
-            query += " ORDER BY id ASC"
-            if limit:
-                query += f" LIMIT {int(limit)}"
-            cursor.execute(query, tuple(params))
-            return [dict(row) for row in cursor.fetchall()]
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                query = "SELECT * FROM media_files WHERE upload_status IN ('PENDING', 'FAILED')"
+                params = []
+                if google_account:
+                    query += " AND google_account = ?"
+                    params.append(google_account)
+                query += " ORDER BY id ASC"
+                if limit:
+                    query += f" LIMIT {int(limit)}"
+                cursor.execute(query, tuple(params))
+                return [dict(row) for row in cursor.fetchall()]
 
     def mark_uploading(self, file_id: int) -> None:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE media_files SET upload_status = 'UPLOADING' WHERE id = ?", (file_id,))
-            conn.commit()
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE media_files SET upload_status = 'UPLOADING' WHERE id = ?", (file_id,))
+                conn.commit()
 
     def mark_uploaded(self, file_id: int, google_photo_id: str) -> None:
         now_str = datetime.now().isoformat()
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE media_files 
-                SET upload_status = 'UPLOADED', 
-                    google_photo_id = ?, 
-                    uploaded_at = ?, 
-                    error_message = NULL 
-                WHERE id = ?
-            """, (google_photo_id, now_str, file_id))
-            conn.commit()
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE media_files 
+                    SET upload_status = 'UPLOADED', 
+                        google_photo_id = ?, 
+                        uploaded_at = ?, 
+                        error_message = NULL 
+                    WHERE id = ?
+                """, (google_photo_id, now_str, file_id))
+                conn.commit()
 
     def mark_upload_failed(self, file_id: int, error_message: str) -> None:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE media_files 
-                SET upload_status = 'FAILED', 
-                    error_message = ? 
-                WHERE id = ?
-            """, (error_message, file_id))
-            conn.commit()
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE media_files 
+                    SET upload_status = 'FAILED', 
+                        error_message = ? 
+                    WHERE id = ?
+                """, (error_message, file_id))
+                conn.commit()
 
     def get_stats(self) -> Dict[str, Any]:
         with self._get_connection() as conn:

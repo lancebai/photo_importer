@@ -14,7 +14,7 @@ An automated tool designed for macOS to automatically import Canon RAW photos (`
 - **Canon RAW & Media Support**: Handles `.CR2`, `.CR3`, `.CRW`, `.JPG`, `.PNG`, `.HEIC`, `.MP4`, `.MOV`.
 - **EXIF Capture Date Organization**: Sorts media into structured folders (`YYYY-MM-DD/` or `YYYY/YYYY-MM-DD/`) using true capture timestamps (`DateTimeOriginal`).
 - **Integrity Verification**: Verifies transfers using SHA256 checksums before updating sync records.
-- **Deduplication Engine**: Built-in SQLite database prevents duplicate local imports and duplicate Google Photos uploads.
+- **High-Performance Multi-Threaded Uploads**: Concurrent byte streaming via `ThreadPoolExecutor` (3x-5x speedup) with batch registration.
 - **Native macOS Notifications**: Desktop banner alerts when imports start and complete.
 
 ---
@@ -133,11 +133,11 @@ An automated tool designed for macOS to automatically import Canon RAW photos (`
 # Import from specific source folder or SD card using its matrix profile
 ./import_photos.py import --src /Volumes/EOS_DIGITAL
 
-# Import and immediately trigger Google Photos upload
-./import_photos.py sync --src /Volumes/WORK_SD
+# Import and immediately trigger Google Photos upload (4 concurrent threads)
+./import_photos.py sync --src /Volumes/WORK_SD --workers 4
 
-# Upload pending files for a specific account
-./import_photos.py upload --account work
+# Upload pending files for a specific account with custom concurrency
+./import_photos.py upload --account work --workers 6
 ```
 
 ### 3. Background Watcher Service

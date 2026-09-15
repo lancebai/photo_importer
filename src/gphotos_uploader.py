@@ -1,6 +1,8 @@
 import json
 import mimetypes
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Any
 import requests
@@ -123,15 +125,18 @@ def upload_pending_photos(
     db: Database,
     google_account: Optional[str] = None,
     limit: Optional[int] = None,
+    max_workers: Optional[int] = None,
     interactive: bool = True,
     notify: bool = True
 ) -> Dict[str, Any]:
     """
-    Upload pending media files in the database to Google Photos, grouped by Google account.
+    Upload pending media files to Google Photos using ThreadPoolExecutor for concurrent transfers.
     """
     pending = db.get_pending_uploads(google_account=google_account, limit=limit)
     if not pending:
         return {"uploaded": 0, "failed": 0, "skipped": 0}
+
+    workers = max_workers or getattr(config.defaults, "max_workers", 4) or 4
 
     # Group pending items by google_account
     by_account: Dict[str, List[Dict[str, Any]]] = {}
@@ -157,50 +162,60 @@ def upload_pending_photos(
             print(f"Skipping upload for account '{acc_name}': not authenticated.")
             continue
 
-        print(f"\n☁️ Uploading {len(items)} file(s) via Google Account '{acc_name}'...")
+        print(f"\n☁️ Uploading {len(items)} file(s) via Google Account '{acc_name}' using {workers} concurrent workers...")
 
         # Cache album IDs per album title for this account
         album_cache: Dict[str, Optional[str]] = {}
+        album_lock = threading.Lock()
 
-        BATCH_SIZE = 10
-        for i in range(0, len(items), BATCH_SIZE):
-            batch = items[i:i + BATCH_SIZE]
-            upload_tokens = []
+        def process_single_upload(record: Dict[str, Any]) -> Tuple[int, Optional[str], str, Optional[str], Optional[str]]:
+            file_id = record["id"]
+            file_path = Path(record["local_path"])
+            fname = record["original_filename"]
+            v_name = record.get("volume_name")
 
-            for record in batch:
-                file_id = record["id"]
-                file_path = Path(record["local_path"])
-                fname = record["original_filename"]
-                v_name = record.get("volume_name")
+            # Resolve album from volume config
+            vol_cfg = config.get_resolved_volume_config(v_name) if v_name else None
+            target_album_title = vol_cfg.upload.album if (vol_cfg and vol_cfg.upload) else None
 
-                # Resolve album from volume config if configured
-                vol_cfg = config.get_resolved_volume_config(v_name) if v_name else None
-                target_album_title = vol_cfg.upload.album if (vol_cfg and vol_cfg.upload) else None
-
-                album_id = None
-                if target_album_title:
+            album_id = None
+            if target_album_title:
+                with album_lock:
                     if target_album_title not in album_cache:
                         album_cache[target_album_title] = get_or_create_album(target_album_title, creds)
                     album_id = album_cache.get(target_album_title)
 
-                if not file_path.exists():
-                    db.mark_upload_failed(file_id, "Local file not found")
-                    total_failed += 1
-                    continue
+            if not file_path.exists():
+                return (file_id, None, fname, album_id, "Local file not found")
 
-                try:
-                    db.mark_uploading(file_id)
-                    size_mb = round(record["file_size"] / (1024 * 1024), 2)
-                    print(f"  Uploading ({record['id']}) {fname} ({size_mb} MB) -> [{acc_name}]...")
-                    token = upload_file_bytes(file_path, creds)
-                    upload_tokens.append((file_id, token, fname, album_id))
-                except Exception as e:
-                    db.mark_upload_failed(file_id, str(e))
-                    total_failed += 1
-                    print(f"  ❌ Upload failed for {fname}: {e}")
+            try:
+                db.mark_uploading(file_id)
+                size_mb = round(record["file_size"] / (1024 * 1024), 2)
+                print(f"  [Worker] Uploading ({record['id']}) {fname} ({size_mb} MB)...")
+                token = upload_file_bytes(file_path, creds)
+                return (file_id, token, fname, album_id, None)
+            except Exception as e:
+                return (file_id, None, fname, album_id, str(e))
 
+        BATCH_SIZE = 20
+        for i in range(0, len(items), BATCH_SIZE):
+            batch = items[i:i + BATCH_SIZE]
+            upload_tokens = []
+
+            # Execute batch uploads concurrently with ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                future_to_record = {executor.submit(process_single_upload, rec): rec for rec in batch}
+                for future in as_completed(future_to_record):
+                    file_id, token, fname, album_id, error = future.result()
+                    if error:
+                        db.mark_upload_failed(file_id, error)
+                        total_failed += 1
+                        print(f"  ❌ Upload failed for {fname}: {error}")
+                    elif token:
+                        upload_tokens.append((file_id, token, fname, album_id))
+
+            # Batch register completed tokens in Google Photos
             if upload_tokens:
-                # Group by album_id for batch creation
                 by_album: Dict[Optional[str], List[Tuple[int, str, str]]] = {}
                 for f_id, tok, fn, a_id in upload_tokens:
                     by_album.setdefault(a_id, []).append((f_id, tok, fn))
@@ -229,7 +244,7 @@ def upload_pending_photos(
     if notify and total_uploaded > 0:
         send_notification(
             title="☁️ Google Photos Upload Complete",
-            subtitle=f"{total_uploaded} file(s) uploaded",
+            subtitle=f"{total_uploaded} file(s) uploaded ({workers} threads)",
             message=f"Uploaded to your Google Photos library"
         )
 

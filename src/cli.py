@@ -72,13 +72,15 @@ def cmd_import(args, config: Config, db: Database):
     if should_upload and res.imported_count > 0:
         from .gphotos_uploader import upload_pending_photos
         target_account = vol_cfg.upload.google_account
+        workers = getattr(args, "workers", None)
         print(f"\n☁️ Starting Google Photos upload for account '{target_account}'...")
-        upload_pending_photos(config, db, google_account=target_account, interactive=True)
+        upload_pending_photos(config, db, google_account=target_account, max_workers=workers, interactive=True)
 
 def cmd_upload(args, config: Config, db: Database):
     from .gphotos_uploader import upload_pending_photos
     account = args.account
-    upload_pending_photos(config, db, google_account=account, limit=args.limit, interactive=True)
+    workers = getattr(args, "workers", None)
+    upload_pending_photos(config, db, google_account=account, limit=args.limit, max_workers=workers, interactive=True)
 
 def cmd_sync(args, config: Config, db: Database):
     args.upload = True
@@ -248,6 +250,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-upload", action="store_true", help="Disable Google Photos upload")
     parser.add_argument("--volume-name", help="Volume profile name from matrix")
 
+    parser.add_argument("--workers", type=int, default=4, help="Number of concurrent upload workers (default: 4)")
+
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
 
     # import
@@ -259,11 +263,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("--keep-source", "--copy", action="store_true", dest="keep_source", help="Keep source files on SD card (default)")
     p_import.add_argument("--upload", action="store_true", help="Trigger Google Photos upload")
     p_import.add_argument("--no-upload", action="store_true", help="Disable Google Photos upload")
+    p_import.add_argument("--workers", type=int, help="Number of concurrent upload workers (default: 4)")
 
     # upload
     p_upload = subparsers.add_parser("upload", help="Upload pending photos to Google Photos")
     p_upload.add_argument("--account", help="Specific Google account name to upload for")
     p_upload.add_argument("--limit", type=int, help="Maximum number of files to upload")
+    p_upload.add_argument("--workers", type=int, help="Number of concurrent upload workers (default: 4)")
 
     # sync
     p_sync = subparsers.add_parser("sync", help="Import from SD card and upload to Google Photos")
@@ -272,6 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--volume-name", help="Volume profile name in config matrix")
     p_sync.add_argument("--delete-source", "--delete-after-import", "--move", action="store_true", dest="delete_source", help="Delete source files after verified import")
     p_sync.add_argument("--keep-source", "--copy", action="store_true", dest="keep_source", help="Keep source files on SD card (default)")
+    p_sync.add_argument("--workers", type=int, help="Number of concurrent upload workers (default: 4)")
 
     # watch
     p_watch = subparsers.add_parser("watch", help="Run SD card watcher daemon in foreground")
