@@ -140,6 +140,8 @@ def import_photos(
             # Check if file is already tracked in DB with identical hash and exists locally
             existing_record = db.get_by_hash(file_hash)
             if existing_record and Path(existing_record["local_path"]).exists():
+                if vol_cfg.delete_after_import:
+                    file_path.unlink(missing_ok=True)
                 result.skipped_count += 1
                 continue
 
@@ -159,6 +161,9 @@ def import_photos(
                     raise IOError(f"Checksum mismatch on copy for {file_path.name}")
 
                 # Optional delete from source if delete_after_import is enabled
+                if vol_cfg.delete_after_import:
+                    file_path.unlink(missing_ok=True)
+            else:
                 if vol_cfg.delete_after_import:
                     file_path.unlink(missing_ok=True)
 
