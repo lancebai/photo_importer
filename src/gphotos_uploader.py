@@ -76,7 +76,6 @@ def batch_create_media_items(
     new_media_items = []
     for db_id, token, filename in items:
         new_media_items.append({
-            "description": f"Imported: {filename}",
             "simpleMediaItem": {
                 "uploadToken": token,
                 "fileName": filename
