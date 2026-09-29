@@ -48,7 +48,7 @@ def find_available_volumes(monitored_names: Optional[List[str]] = None) -> List[
         if not vol.is_dir() or vol.name in system_vols:
             continue
         
-        is_matched = vol.name in names_set or is_sd_card_volume(vol)
+        is_matched = vol.name in names_set
         results.append((vol, is_matched))
 
     return results

@@ -4,7 +4,7 @@ from typing import Set
 
 from .config import Config, VolumeConfig
 from .db import Database
-from .importer import find_available_volumes, import_photos, is_sd_card_volume
+from .importer import find_available_volumes, import_photos
 from .gphotos_uploader import upload_pending_photos
 
 def process_volume(volume_path: Path, config: Config, db: Database) -> None:
@@ -53,12 +53,11 @@ def check_and_process_volumes(config: Config, db: Database, active_volumes: Set[
     # Find newly mounted volumes
     new_mounts = current_mounts - active_volumes
     for vol in new_mounts:
-        # Check if matched in config whitelist or is an SD card
+        # Check if matched in config whitelist
         is_whitelisted = vol.name in config.monitored_volumes
-        is_sd = is_sd_card_volume(vol)
 
-        if is_whitelisted or is_sd:
-            print(f"🎯 Detected matching card: '{vol.name}' (Whitelisted: {is_whitelisted}, SD: {is_sd})")
+        if is_whitelisted:
+            print(f"🎯 Detected monitored volume: '{vol.name}'")
             process_volume(vol, config, db)
         else:
             print(f"ℹ️  Ignoring non-monitored volume: '{vol.name}'")
